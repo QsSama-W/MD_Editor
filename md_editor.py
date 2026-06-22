@@ -18,9 +18,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QInputDialog, QLineEdit, QDialog, QFormLayout, QComboBox,
                              QSystemTrayIcon, QStyle, QProgressDialog)
 from PyQt6.QtGui import QFont, QAction, QTextCursor, QIcon
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QFileSystemWatcher
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage
 
 import markdown
 import pymdownx.superfences
@@ -218,6 +219,14 @@ class GithubSettingsDialog(QDialog):
         self.sm.set_setting('gh_url_format', self.url_fmt.currentText())
         self.accept()
 
+class PreviewPage(QWebEnginePage):
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        if is_main_frame and url.scheme() in ("http", "https"):
+            webbrowser.open(url.toString())
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+
 class MarkdownEditor(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -230,6 +239,8 @@ class MarkdownEditor(QMainWindow):
         self.autosave_countdown = 30
         self.pause_ui_updates = 0
         self.preview_loaded = False 
+        self.file_watcher = QFileSystemWatcher()
+        self.file_watcher.fileChanged.connect(self.on_external_file_change)
         
         self.initUI()
         
@@ -268,6 +279,7 @@ class MarkdownEditor(QMainWindow):
         self.editor.verticalScrollBar().valueChanged.connect(self.sync_scroll_preview)
 
         self.preview = QWebEngineView()
+        self.preview.setPage(PreviewPage(self.preview))
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview.customContextMenuRequested.connect(self.show_preview_context_menu)
         
@@ -370,7 +382,13 @@ class MarkdownEditor(QMainWindow):
 
     def quit_app(self):
         if self.maybe_save():
+            self.tray_icon.hide()
             QApplication.instance().quit()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.activateWindow()
+        self.raise_()
 
     def on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -658,6 +676,7 @@ del "%~f0"
                     self.pause_ui_updates = 2
                     title = f"{os.path.basename(self.current_file)} - MD 编辑器"
                     self.setWindowTitle(title)
+                    self.start_watching_file(self.current_file)
                 except: pass
             
             self.autosave_countdown = self.autosave_interval_val
@@ -766,6 +785,8 @@ del "%~f0"
     def new_file(self):
         if not self.maybe_save(): return
         self.editor.clear(); self.current_file = None; self.editor.document().setModified(False); self.update_title("未命名 - MD 编辑器")
+        if self.file_watcher.files():
+            self.file_watcher.removePaths(self.file_watcher.files())
 
     def open_file(self):
         if not self.maybe_save(): return
@@ -796,6 +817,34 @@ del "%~f0"
         self.current_file = path
         self.editor.document().setModified(False)
         self.update_title(f"{os.path.basename(path)} - MD 编辑器")
+        self.start_watching_file(path)
+
+    def start_watching_file(self, path):
+        if self.file_watcher.files():
+            self.file_watcher.removePaths(self.file_watcher.files())
+        if path and os.path.exists(path):
+            self.file_watcher.addPath(path)
+
+    def on_external_file_change(self, path):
+        if not self.current_file or path != self.current_file:
+            return
+        if self.editor.document().isModified():
+            return
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f: content = f.read()
+        except:
+            return
+        cursor = self.editor.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        selected = cursor.selectedText()
+        if selected == content:
+            return
+        self.pause_ui_updates = 5
+        self.editor.setPlainText(content)
+        self.editor.document().setModified(False)
+        self.start_watching_file(path)
 
     def save_file(self):
         if not self.current_file:
@@ -813,15 +862,19 @@ del "%~f0"
             self.update_title(f"{os.path.basename(self.current_file)} - MD 编辑器")
             self.save_status_label.setText(" (已保存)")
             self.pause_ui_updates = 2
-            self.autosave_countdown = self.autosave_interval_val 
+            self.autosave_countdown = self.autosave_interval_val
+            self.start_watching_file(self.current_file)
             return True
         except Exception as e:
             self.show_custom_msg("错误", f"保存失败: {str(e)}", QMessageBox.Icon.Critical)
             return False
 
     def closeEvent(self, event):
-        if self.maybe_save(): event.accept()
-        else: event.ignore()
+        if self.maybe_save():
+            event.ignore()
+            self.hide()
+        else:
+            event.ignore()
 
 if __name__ == '__main__':
     def handle_exception(exc_type, exc_value, exc_traceback):
