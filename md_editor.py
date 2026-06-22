@@ -21,7 +21,6 @@ from PyQt6.QtGui import QFont, QAction, QTextCursor, QIcon
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QFileSystemWatcher
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEnginePage
 
 import markdown
 import pymdownx.superfences
@@ -219,13 +218,6 @@ class GithubSettingsDialog(QDialog):
         self.sm.set_setting('gh_url_format', self.url_fmt.currentText())
         self.accept()
 
-class PreviewPage(QWebEnginePage):
-    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
-        if is_main_frame and url.scheme() in ("http", "https"):
-            webbrowser.open(url.toString())
-            return False
-        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
-
 
 class MarkdownEditor(QMainWindow):
     def __init__(self):
@@ -279,7 +271,6 @@ class MarkdownEditor(QMainWindow):
         self.editor.verticalScrollBar().valueChanged.connect(self.sync_scroll_preview)
 
         self.preview = QWebEngineView()
-        self.preview.setPage(PreviewPage(self.preview))
         self.preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.preview.customContextMenuRequested.connect(self.show_preview_context_menu)
         
@@ -728,6 +719,7 @@ del "%~f0"
             
         md_text = self.editor.toPlainText()
         raw_html = markdown.markdown(md_text, extensions=['tables', 'sane_lists', 'pymdownx.superfences', 'pymdownx.tasklist', 'pymdownx.magiclink', 'pymdownx.tilde'])
+        raw_html = re.sub(r'<img\s+[^>]*src=["\']([^"\']+)["\'][^>]*/?>', r'<div style="color:#0366d6;border:1px dashed #d1d5da;padding:8px;margin:8px 0;border-radius:4px;font-size:13px;">[图片: \1]</div>', raw_html)
         js_code = f"document.getElementById('write').innerHTML = {json.dumps(raw_html)};"
         self.preview.page().runJavaScript(js_code)
 
